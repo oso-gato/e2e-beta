@@ -23,6 +23,11 @@ EXPOSE 8080
 
 COPY --chmod=755 bin/status-server /usr/local/bin/status-server
 
+# The health command, shipped in the image so all four runners re-supply the SAME
+# literal token (OCI drops the Containerfile HEALTHCHECK). Stable, so it is cached
+# alongside the server and above the per-build VERSION churn.
+COPY --chmod=755 bin/status-probe /usr/local/bin/status-probe
+
 # STATUS_VERSION is the SINGLE source of the served version — there is no VERSION
 # file and no second env var to drift from it.
 ARG VERSION=0.0.0-dev
@@ -40,5 +45,11 @@ ENV STATUS_VERSION=${VERSION}
 
 # Unprivileged. 8080 is >1024, so no capability is needed to bind it.
 USER 1000
+
+# Healthy ONLY when the endpoint actually answers 200 with a well-formed body (F4),
+# not merely when the process exists. Default (non-strict) mode; exec form so no
+# shell is needed. Runners that drop this metadata re-supply the identical command.
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/status-probe"]
 
 CMD ["/usr/local/bin/status-server"]
