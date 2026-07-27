@@ -26,6 +26,16 @@ COPY --chmod=755 bin/status-server /usr/local/bin/status-server
 # STATUS_VERSION is the SINGLE source of the served version — there is no VERSION
 # file and no second env var to drift from it.
 ARG VERSION=0.0.0-dev
+
+# Record the version in the build log. This is NOT decoration: buildah computes
+# the cache key of `ENV STATUS_VERSION=${VERSION}` from the UNEXPANDED instruction
+# text, so on a warm cache a changed --build-arg silently reuses the previous
+# layer and the image reports a version it was not built with (observed: building
+# --build-arg VERSION=4.5.6 yielded an image serving 9.9.9). A RUN that consumes
+# the arg keys on the expanded value, so the version layers below rebuild whenever
+# VERSION actually changes.
+RUN echo "e2e-beta build version: ${VERSION}"
+
 ENV STATUS_VERSION=${VERSION}
 
 # Unprivileged. 8080 is >1024, so no capability is needed to bind it.
