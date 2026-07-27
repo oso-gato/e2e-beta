@@ -2,3 +2,6 @@
 *.swp
 *~
 .DS_Store
+# python bytecode from local syntax checks
+__pycache__/
+*.pyc
