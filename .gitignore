@@ -1,0 +1,4 @@
+# editor / OS noise — never part of the image source
+*.swp
+*~
+.DS_Store
