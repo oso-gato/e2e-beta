@@ -1,0 +1,94 @@
+name: build
+
+# ============================================================================
+# Build + publish e2e-beta to ghcr.io/oso-gato/e2e-beta.
+#
+# Completes the fleet deploy contract for this box:
+#   merged main -> CI builds -> ghcr.io/oso-gato/e2e-beta:latest -> fedora-bootstrap deploys.
+# Roles are fixed by policy: build = ALWAYS CI (here); operate/deploy = ALWAYS
+# fedora-bootstrap. This workflow only builds and publishes -- nothing else.
+#
+# CONTROL-PLANE CLASS: .github/workflows/** is control-plane.
+#
+# Unsigned by design: image signing was dropped fleet-wide as unenforced (no
+# host cosign-verifies). Do NOT add cosign/sigstore steps here.
+# ============================================================================
+
+on:
+  # Publish on every merge to main.
+  push:
+    branches:
+      - main
+  # PRs get an immediate build-only CI signal (no login, no push -- see below).
+  pull_request:
+    branches:
+      - main
+  # Manual re-publish on demand.
+  workflow_dispatch:
+  # Monthly rebuild so the base picks up upstream Fedora security updates. The
+  # 15th at 04:00 UTC matches the fleet cadence; a --no-cache build on this event
+  # (see `no-cache` below) forces fresh RPMs rather than reusing cached layers.
+  schedule:
+    - cron: "0 4 15 * *"
+
+# Least privilege: read the repo, write the image. Nothing broader.
+# GITHUB_TOKEN is the ONLY secret used (no PAT, no external registry cred).
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Log in ONLY on trusted events (push / dispatch / cron). An untrusted PR
+      # -- including one from a fork -- must never obtain a registry credential
+      # or write to the registry. PR events skip this step entirely.
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Derive the image tags and a traceable VERSION from the commit:
+      #   :latest        -- the deploy-contract default IMAGE in run.sh
+      #   :<YYYYMMDD>     -- the build date (distinguishes monthly rebuilds)
+      #   :<sha7>         -- the exact source commit (immutable)
+      # VERSION=<date>-<sha7> is baked into the image so the running container's
+      # `version:` field identifies the commit it was built from -- never the
+      # Containerfile's 0.0.0-dev default. The date component keeps monthly
+      # security rebuilds of the same commit distinguishable.
+      - name: Compute tags and version
+        id: meta
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          d=$(date +%Y%m%d)
+          sha7=${GITHUB_SHA::7}
+          img="ghcr.io/${OWNER}/e2e-beta"
+          {
+            echo "tags<<EOF"
+            echo "${img}:latest"
+            echo "${img}:${d}"
+            echo "${img}:${sha7}"
+            echo "EOF"
+            echo "version=${d}-${sha7}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Containerfile
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          # PRs validate the build only -- never push a PR image to the registry.
+          push: ${{ github.event_name != 'pull_request' }}
+          # Force a fresh base only on the monthly cron so upstream RPMs refresh.
+          no-cache: ${{ github.event_name == 'schedule' }}
+          tags: ${{ steps.meta.outputs.tags }}
