@@ -1,0 +1,63 @@
+# e2e-beta — the managed (systemd) equivalent of run.sh.
+#
+# run.sh is the authority on how this container runs. This unit is not allowed
+# an opinion of its own: every key below is a transcription of a flag in
+# run.sh, and the table names the flag each key came from. If run.sh changes,
+# this file is WRONG until it is changed to match — the table is here so that
+# such a drift is visible in review rather than latent in production.
+#
+#   run.sh                                  this file
+#   --------------------------------------  ------------------------------
+#   IMAGE      (default)                    Image=
+#   NAME       (default)                    ContainerName=
+#   --publish ${HOST_PORT}:${PORT}          PublishPort=
+#   --env PORT=${PORT}                      Environment=PORT=
+#   --health-cmd /usr/local/bin/status-probe  HealthCmd=
+#   --health-interval 5s                    HealthInterval=
+#   --health-timeout 5s                     HealthTimeout=
+#   --health-retries 3                      HealthRetries=
+#   --health-start-period 5s                HealthStartPeriod=
+#   --cap-drop=ALL                          DropCapability=ALL
+#   --security-opt no-new-privileges        NoNewPrivileges=true
+#   --read-only                             ReadOnly=true
+#   --restart=unless-stopped                [Service] Restart=always
+#
+# run.sh takes IMAGE / NAME / PORT / HOST_PORT from the environment; a unit
+# file is a declaration and not a prompt, so they are fixed here at run.sh's
+# own defaults. A host that needs different values changes them in a systemd
+# drop-in, which keeps this file readable as "run.sh, as systemd would say it".
+#
+# DELIBERATELY NOT MIRRORED — three run.sh flags describe how a *script* starts
+# a container rather than how the container *runs*, and systemd owns that part:
+#   --detach      systemd supervises the container; there is no shell to return to.
+#   --replace     `systemctl restart e2e-beta` is the idempotent path here.
+#   --pull=never  run.sh resolves the image before it runs so its own run step
+#                 cannot hang on a pull; the unit leaves Pull= at its default
+#                 and lets the engine fetch the image it is told to run.
+#
+# THIS REPO SHIPS THIS FILE, IT DOES NOT INSTALL IT. Dropping it into
+# /etc/containers/systemd/ (or ~/.config/containers/systemd/ for a rootless
+# user) and starting the unit is the host's job, not this repo's.
+
+[Unit]
+Description=e2e-beta status page
+
+[Container]
+Image=ghcr.io/oso-gato/e2e-beta:latest
+ContainerName=e2e-beta
+PublishPort=8080:8080
+Environment=PORT=8080
+HealthCmd=/usr/local/bin/status-probe
+HealthInterval=5s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=5s
+DropCapability=ALL
+NoNewPrivileges=true
+ReadOnly=true
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
