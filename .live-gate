@@ -25,10 +25,14 @@ CFILE_status='Containerfile'
 # `--network=none --cap-drop=ALL`: no network namespace beyond loopback, and not one
 # capability. The service is content with that — it runs as uid 1000 and binds
 # :8080, which is above 1024 and so needs no NET_BIND_SERVICE, it makes no outbound
-# connection, and the probe reaches it across the candidate's OWN loopback (where
-# `--network=none` still leaves `lo` up) rather than over a published port. Verified
-# empirically under exactly those flags, not merely reasoned about. Anything this
-# repo added here — a capability, an egress, a device — would be a widening the
+# connection, and the probe reaches it across the candidate's OWN loopback (which
+# `--network=none` leaves up) rather than over a published port. Tested rather than
+# assumed, and precisely: in a fresh, otherwise-empty network namespace with only
+# `lo`, under an EMPTY capability bounding set, the server binds :8080 and
+# `status-probe --strict` exits 0. The one step the dev box cannot itself execute is
+# the literal `--network=none` launch — its nested engine cannot create a network
+# namespace at all — so that is what the host's own GREEN verdict settles. Anything
+# this repo added here — a capability, an egress, a device — would be a widening the
 # service does not need, and a fence may never carry -p/--publish: the gate is
 # loopback-only by construction and fails closed on one.
 
