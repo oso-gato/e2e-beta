@@ -1,0 +1,54 @@
+# e2e-beta — the host live-gate (Gate B) contract.
+#
+# The host reads this file out of the UNTRUSTED PR head and PARSES it — it never
+# sources it — then builds a DISPOSABLE candidate from CFILE_<target>, launches it
+# fenced, waits for HEALTH_<target>, and runs PROBE_<target> inside the candidate
+# via `podman exec`. GREEN only if the probe genuinely passes: a build that merely
+# compiles is not a pass.
+#
+# GRAMMAR (what the host's parser enforces — violating any of it is a RED verdict,
+# not a soft failure): one KEY=VALUE per line; `#` comments and blank lines fine;
+# no cross-variable references ($OTHER) — every value is inlined literally; command
+# values are SINGLE-quoted, so their metacharacters are inert here and only ever run
+# LATER, inside the disposable candidate. Keys are suffixed KEY_<target>.
+#
+# ONE TARGET. This repo builds one image from one Containerfile, so `status` is the
+# whole contract — no second lineage to keep in step.
+LIVE_GATE_TARGETS="status"
+
+# The only Containerfile in the repo. Stated rather than left to the default so the
+# contract says what it builds.
+CFILE_status='Containerfile'
+
+# FENCE_status IS DELIBERATELY UNSET, and that is the strongest statement this file
+# makes. Unset means the host applies its hardest default fence,
+# `--network=none --cap-drop=ALL`: no network namespace beyond loopback, and not one
+# capability. The service is content with that — it runs as uid 1000 and binds
+# :8080, which is above 1024 and so needs no NET_BIND_SERVICE, it makes no outbound
+# connection, and the probe reaches it across the candidate's OWN loopback (where
+# `--network=none` still leaves `lo` up) rather than over a published port. Verified
+# empirically under exactly those flags, not merely reasoned about. Anything this
+# repo added here — a capability, an egress, a device — would be a widening the
+# service does not need, and a fence may never carry -p/--publish: the gate is
+# loopback-only by construction and fails closed on one.
+
+# The health command, VERBATIM as run.sh's `--health-cmd` and the Containerfile's
+# HEALTHCHECK — the gate has to re-supply it because an OCI image drops the
+# Containerfile HEALTHCHECK on the registry round-trip. One shipped script rather
+# than an inlined expression, so these declarations cannot drift apart.
+HEALTH_status='/usr/local/bin/status-probe'
+
+# The functional probe, and STRICTLY STRONGER than HEALTH by design: --strict adds
+# that the body's `utc:` field parses and is freshly generated (within the probe's
+# own clock skew window) and that `version:` is non-empty. A static file, a stale
+# cached body, or an image that starts but serves yesterday's answer therefore fails
+# here even though it would satisfy a plain 200 check. This is the line between
+# "it compiled" and "it serves".
+PROBE_status='/usr/local/bin/status-probe --strict'
+
+# Deliberately NOT declared, because this service does not need them and an unused
+# knob is a claim the repo would have to keep true:
+#   HEALTH_START_/HEALTH_TRIES_/HEALTH_SLEEP_status — the endpoint answers in well
+#     under a second, so the gate's default healthy-wait budget is ample.
+#   MEMORY_/PIDS_status — a stdlib HTTP server sits far inside the gate defaults.
+#   SECRET_MOUNT_/SECRET_ENV_status — this image has no secrets to scratch-supply.
