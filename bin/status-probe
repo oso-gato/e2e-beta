@@ -1,0 +1,115 @@
+#!/usr/bin/python3
+"""status-probe — the ONE health command for the e2e-beta status image (F4).
+
+The health signal must be TRUE only when the endpoint actually answers 200 — not
+merely when the process exists. This script is that signal, and it is shipped
+INSIDE the image because OCI images drop the Containerfile `HEALTHCHECK`, so every
+runner (the image healthcheck, run.sh `--health-cmd`, the Quadlet `HealthCmd=`, and
+.live-gate's `HEALTH_<target>`) must re-supply the command. Putting the logic in one
+script means those four declarations are the same short literal token and cannot
+drift apart — do not inline a multi-command health expression anywhere.
+
+F1 (provenance): uses ONLY the Python standard library that the image already
+installed — no curl, no added package. No network egress beyond loopback.
+
+Default mode  — exit 0 iff the endpoint answers HTTP 200 AND the body carries the
+                host:, utc: and version: fields.
+--strict mode — the above, PLUS the utc: field parses as an ISO-8601 UTC timestamp
+                within +/-120s of this probe's own clock (proving the body is
+                generated live, not a static file or a cached response) and the
+                version: field is non-empty. .live-gate uses --strict as the host
+                live-gate's functional probe.
+
+Exit non-zero on connection refused, timeout, any non-200 status, or a
+missing/failing field. Silent but for one short line on success; a specific
+diagnostic on stderr on failure.
+
+Usage: status-probe [--strict]
+"""
+
+import os
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+TIMEOUT = 3.0                 # seconds — a live loopback endpoint answers instantly
+MAX_SKEW = 120                # seconds — the --strict utc: freshness window (+/-)
+REQUIRED_FIELDS = ("host", "utc", "version")
+
+
+def fail(msg):
+    """Emit one specific diagnostic to stderr; return the non-zero exit code."""
+    sys.stderr.write(f"status-probe: {msg}\n")
+    return 1
+
+
+def parse_fields(body):
+    """The body is `key: value` lines; return {key: value} (first colon splits)."""
+    fields = {}
+    for line in body.splitlines():
+        if ":" in line:
+            key, _, value = line.partition(":")
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def utc_is_fresh(value):
+    """(ok, why) — ok iff `value` parses as a UTC timestamp within +/-MAX_SKEW of now."""
+    text = value.strip()
+    if text.endswith("Z"):                     # the server emits ...SSZ; normalise for
+        text = text[:-1] + "+00:00"            # fromisoformat (Z support varies by version)
+    try:
+        stamp = datetime.fromisoformat(text)
+    except ValueError:
+        return False, f"utc: {value!r} is not an ISO-8601 timestamp"
+    if stamp.tzinfo is None:                    # a naive stamp on a field named utc: is UTC
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    skew = abs((datetime.now(timezone.utc) - stamp).total_seconds())
+    if skew > MAX_SKEW:
+        return False, f"utc: stale by {skew:.0f}s (> {MAX_SKEW}s) — body is not live"
+    return True, None
+
+
+def main(argv):
+    strict = False
+    for arg in argv:
+        if arg == "--strict":
+            strict = True
+        else:
+            return fail(f"unknown argument {arg!r} (only --strict is accepted)")
+
+    port = os.environ.get("PORT", "8080")
+    url = f"http://127.0.0.1:{port}/"
+
+    try:
+        with urllib.request.urlopen(url, timeout=TIMEOUT) as resp:
+            status = resp.status
+            body = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:       # 4xx/5xx — a reachable but wrong answer
+        return fail(f"{url} returned HTTP {exc.code} (want 200)")
+    except (urllib.error.URLError, OSError) as exc:   # refused, timeout, DNS, reset
+        reason = getattr(exc, "reason", exc)
+        return fail(f"{url} unreachable: {reason}")
+
+    if status != 200:
+        return fail(f"{url} returned HTTP {status} (want 200)")
+
+    fields = parse_fields(body)
+    missing = [f for f in REQUIRED_FIELDS if f not in fields]
+    if missing:
+        return fail(f"body is missing field(s): {', '.join(missing)}")
+
+    if strict:
+        ok, why = utc_is_fresh(fields["utc"])
+        if not ok:
+            return fail(why)
+        if not fields["version"]:
+            return fail("version: is empty (--strict requires a non-empty build version)")
+
+    sys.stdout.write("status-probe: ok\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
