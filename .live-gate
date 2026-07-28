@@ -26,15 +26,19 @@ CFILE_status='Containerfile'
 # capability. The service is content with that — it runs as uid 1000 and binds
 # :8080, which is above 1024 and so needs no NET_BIND_SERVICE, it makes no outbound
 # connection, and the probe reaches it across the candidate's OWN loopback (which
-# `--network=none` leaves up) rather than over a published port. Tested rather than
-# assumed, and precisely: in a fresh, otherwise-empty network namespace with only
-# `lo`, under an EMPTY capability bounding set, the server binds :8080 and
-# `status-probe --strict` exits 0. The one step the dev box cannot itself execute is
-# the literal `--network=none` launch — its nested engine cannot create a network
-# namespace at all — so that is what the host's own GREEN verdict settles. Anything
-# this repo added here — a capability, an egress, a device — would be a widening the
-# service does not need, and a fence may never carry -p/--publish: the gate is
-# loopback-only by construction and fails closed on one.
+# `--network=none` leaves up) rather than over a published port. Rehearsed rather
+# than assumed, and precisely: under `unshare --user --net` + `setpriv
+# --bounding-set=-all --inh-caps=-all` on the dev box — a fresh namespace holding
+# only `lo`, and an EMPTY capability bounding set (CapBnd 0000000000000000, so no
+# capability could have been used) — the server binds :8080 and both
+# `status-probe` and `status-probe --strict` exit 0. Two things that rehearsal does
+# NOT cover, and which the host's GREEN verdict is what settles: the literal
+# `podman run --network=none --cap-drop=ALL` of the BUILT image (the dev box's
+# nested engine cannot start a container at all here), and `USER 1000` as the image
+# declares it — the rehearsal ran as the unprivileged host uid, not an in-image
+# 1000. Anything this repo added here — a capability, an egress, a device — would be
+# a widening the service does not need, and a fence may never carry -p/--publish: the
+# gate is loopback-only by construction and fails closed on one.
 
 # The health command, VERBATIM as run.sh's `--health-cmd` and the Containerfile's
 # HEALTHCHECK — the gate has to re-supply it because an OCI image drops the
@@ -47,7 +51,9 @@ HEALTH_status='/usr/local/bin/status-probe'
 # own clock skew window) and that `version:` is non-empty. A static file, a stale
 # cached body, or an image that starts but serves yesterday's answer therefore fails
 # here even though it would satisfy a plain 200 check. This is the line between
-# "it compiled" and "it serves".
+# "it compiled" and "it serves". Verified in both directions, not just asserted: a
+# body with a stale `utc:` and a body with an empty `version:` each satisfy
+# HEALTH_status (exit 0) and fail this probe (exit 1).
 PROBE_status='/usr/local/bin/status-probe --strict'
 
 # Deliberately NOT declared, because this service does not need them and an unused
