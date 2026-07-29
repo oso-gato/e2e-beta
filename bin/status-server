@@ -1,0 +1,95 @@
+#!/usr/bin/python3
+"""The e2e-beta status endpoint — answers "is this box alive, and which build?".
+
+Python STANDARD LIBRARY only (F1): the interpreter is Fedora's `python3` package
+and nothing else is installed — no framework, no database, no state, no pip.
+
+Environment:
+  PORT            TCP port to bind on 0.0.0.0 (default 8080)
+  STATUS_VERSION  the single source of the served version, baked by the Containerfile
+"""
+
+import http.server
+import os
+import signal
+import socket
+import sys
+import threading
+from datetime import datetime, timezone
+
+# Bind ALL interfaces, not loopback: both the published host port AND the
+# container's own loopback (how the healthcheck and the host live-gate probe it)
+# have to answer. Port 8080 is >1024, so this needs no capability.
+BIND_ADDR = "0.0.0.0"
+DEFAULT_PORT = 8080
+
+
+def status_body():
+    """The four stable `key: value` lines that probes and the README assert on."""
+    return (
+        "status: ok\n"
+        f"host: {socket.gethostname()}\n"
+        f"utc: {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\n"
+        f"version: {os.environ.get('STATUS_VERSION', 'unknown')}\n"
+    )
+
+
+class StatusHandler(http.server.BaseHTTPRequestHandler):
+    # Don't advertise the interpreter build in the Server: header.
+    server_version = "status-server"
+    sys_version = ""
+
+    def do_GET(self):
+        if self.path == "/":
+            self._respond(200, status_body())
+        else:
+            # Every other path is a real 404 — nothing here silently 200s, so the
+            # README can say what is actually true.
+            self._respond(404, "status: not found\n")
+
+    def _respond(self, code, body):
+        payload = body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt, *args):
+        sys.stdout.write("%s - %s\n" % (self.address_string(), fmt % args))
+        sys.stdout.flush()
+
+
+def main():
+    raw_port = os.environ.get("PORT", str(DEFAULT_PORT))
+    try:
+        port = int(raw_port)
+    except ValueError:
+        sys.stderr.write(f"status-server: PORT is not an integer: {raw_port!r}\n")
+        return 2
+
+    server = http.server.ThreadingHTTPServer((BIND_ADDR, port), StatusHandler)
+
+    # `podman stop` sends SIGTERM to PID 1. shutdown() must not run on the thread
+    # inside serve_forever() (that deadlocks), so hand it to a helper thread —
+    # serve_forever polls every 0.5s, so we exit well inside the 10s kill timeout.
+    def terminate(signum, _frame):
+        print(f"status-server: signal {signum} — shutting down", flush=True)
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
+
+    print(
+        f"status-server: listening on {BIND_ADDR}:{port} "
+        f"version={os.environ.get('STATUS_VERSION', 'unknown')}",
+        flush=True,
+    )
+    server.serve_forever()
+    server.server_close()
+    print("status-server: stopped", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
