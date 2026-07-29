@@ -1,0 +1,25 @@
+# .live-gate — how the host pre-merge live-gate (Gate B) builds, runs and probes an e2e-beta
+# candidate. PARSED by the host, NEVER sourced: inert `KEY=VALUE` lines only. The commands below
+# run exclusively INSIDE the disposable, loopback-only candidate.
+#
+# WHY THIS FILE EXISTS (the baca7f6 RED): with no contract the gate resolves an empty HEALTH, so it
+# launches WITHOUT `--health-cmd`; `podman inspect .State.Health.Status` then never leaves the empty
+# state and the healthy-wait reports `healthy FAIL(none)` — REDding a candidate that was in fact up
+# and serving (verdict evidence: `state=running exit=0`, boot log `status-server: listening on
+# 0.0.0.0:8080`). The image cannot answer this itself: an OCI-format build DROPS a Containerfile
+# `HEALTHCHECK`, which is exactly why the gate takes the health command from here instead.
+LIVE_GATE_TARGETS="default"
+CFILE_default="Containerfile"
+
+# HEALTH — "is it alive?": the service answers its OWN loopback with the status line.
+# Python standard library only, deliberately: `python3` is the single package the image installs
+# (F1 provenance), so there is no curl/wget to lean on. No fence is declared, so the gate imposes
+# its hardest default (`--network=none --cap-drop=ALL`) — `none` keeps `lo` up, and the server binds
+# 0.0.0.0:8080 (>1024, no capability needed), so 127.0.0.1:8080 answers inside the fence.
+HEALTH_default="python3 -c \"import http.client as h; c=h.HTTPConnection('127.0.0.1',8080,timeout=3); c.request('GET','/'); r=c.getresponse(); raise SystemExit(0 if r.status==200 and r.read().startswith(b'status: ok') else 1)\""
+
+# PROBE — "does it actually SERVE the documented access path?", stronger than HEALTH: `GET /` must
+# be 200 AND carry all four stable `key: value` lines, AND an unknown path must really 404 (a server
+# that 200s everything would sail through a weaker probe). Observed values are printed so a failure
+# lands its own diagnosis in the RED verdict instead of a bare non-zero exit.
+PROBE_default="python3 -c \"import http.client as h; c=h.HTTPConnection('127.0.0.1',8080,timeout=5); c.request('GET','/'); r=c.getresponse(); b=r.read().decode(); d=h.HTTPConnection('127.0.0.1',8080,timeout=5); d.request('GET','/no-such-path'); q=d.getresponse(); q.read(); ok=(r.status==200 and q.status==404 and all(k in b for k in ('status: ok','host: ','utc: ','version: '))); print('GET / ->',r.status,repr(b),'| GET /no-such-path ->',q.status); raise SystemExit(0 if ok else 1)\""
